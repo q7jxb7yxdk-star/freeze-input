@@ -1,257 +1,132 @@
 # Freeze Input — Technical Documentation
 
-This document describes the current working-tree implementation, including existing uncommitted source files, as inspected on 2026-10-15. The [README](README.md) contains developer setup and usage. Source implementation, test coverage, and runtime validation are distinct forms of evidence.
+This document describes the sandbox foreground-overlay implementation as of 2026-10-17. The [README](README.md) provides setup and usage; [PRIVACY_POLICY.md](PRIVACY_POLICY.md) describes user-facing information handling.
 
-## Evidence and status
+## Evidence boundary
 
-| Status | Meaning and current scope |
-| --- | --- |
-| **Implemented** | Source exists and is wired into the app entry point, session controller, or worker's normal path |
-| **Test-covered** | `Tests/LogicChecks.swift` contains assertions for the identified logic; this does not claim execution or success |
-| **Verified in this task** | Read-only source/configuration inspection, `plutil -lint`, documentation checks, whitespace checks, and preservation of non-document files |
-| **Externally unverified** | Live TCC/Accessibility behavior, event delivery, physical input suppression, displays, cursor/presentation restoration, emergency recovery, and signing/distribution |
-| **Experimental / Inactive** | Visible inspection mode is implemented but disabled by the current source constant; `AccessibilityPermission.openSettings()` exists without a caller in the normal UI |
-| **Planned / Not implemented** | Only the recommendations in Future development; no release commitment or available feature is implied |
+Source implementation, test coverage, and runtime verification are separate. The current changes are limited to source/configuration inspection, syntax/property-list checks, and diff review. The agent did not perform Build/Test, standalone logic-check execution, app launch, signing, Archive, or hardware validation for these changes. Earlier successful checks of the non-sandboxed version do not establish that this version builds or runs correctly.
 
-No `xcodebuild`, Xcode Build/Test, standalone logic-check execution, Simulator operation, service startup, signing, or hardware test was performed in this task. Build/Test and runtime checks are to be performed manually.
+The user reported successful Esc exit and an alert sound for the thumb-and-three-finger pinch while the overlay remained active. In a user-run comparison, removing `disableProcessSwitching` removed that sound but allowed a screen switch that stopped cleaning; the option is restored. These are scoped user observations, not a complete runtime test report.
 
-## System overview
-
-The app creates a local, foreground cleaning session. SwiftUI presents instructions and permission state. A main-actor controller validates prerequisites, starts a dedicated event-tap thread, and only then asks AppKit to show overlays. The worker suppresses selected keyboard/pointer events and independently monitors health. AppKit provides a local exit/gesture fallback for events delivered to the app.
-
-Normal mode has `CleaningController.showsBlackScreen = true`. The alternative `false` branch keeps the display/cursor visible and does not change app presentation, but still installs real taps and local monitors. It is a source-only diagnostic mode, not a simulated or permission-free path.
-
-No networking, provider adapters, backend, persistence layer, database, cloud sync, or user-document processing exists in the inspected source.
+App Sandbox is declared in Debug and Release with only the sandbox entitlement. The final signed executable's entitlements, behavior on a clean Mac, and App Store acceptance remain externally unverified.
 
 ## Architecture and ownership
 
-```mermaid
-flowchart TD
-    App[FreezeInputApp and app delegate] --> Controller[CleaningController: MainActor]
-    App --> View[ContentView]
-    View --> Controller
-    Controller --> Permission[AccessibilityPermission]
-    Controller --> Windows[BlackoutWindows: MainActor]
-    Controller --> Worker[InputInterceptor: dedicated thread and CFRunLoop]
-    Windows -->|local NSEvent fallback| Controller
-    Worker -->|asynchronous callbacks with session UUID guard| Controller
-    Worker --> Decoder[ExitKeyTracker]
-    Controller --> LocalDecoder[Local ExitKeyTracker]
-    Decoder --> Policy[EscapePressTracker and CleaningSessionPolicy]
-    LocalDecoder --> Policy
-    Worker --> APIs[Core Graphics, Accessibility, Carbon]
-```
+The app uses SwiftUI for its control window and AppKit for foreground black overlays and local event handling. There is no Accessibility permission gate, Input Monitoring request, global event tap, privileged helper, or systemwide event suppression.
 
-`FreezeInputApp` is the composition root: it adopts `FreezeInputAppDelegate`, retains `CleaningController.shared` with `@StateObject`, and injects it into `ContentView` as an `@ObservedObject`. There is no dependency-injection framework, service protocol layer, or mock provider configuration. Concrete dependencies are created directly.
-
-| Component / file under `Freeze Input/` | Responsibility, interface, and ownership |
+| Component under `Freeze Input/` | Responsibility |
 | --- | --- |
-| `MyApp.swift`: `FreezeInputApp` | Owns the single named SwiftUI window and controller observation; removes the New command group and fixes content-size resizing |
-| `MyApp.swift`: `FreezeInputAppDelegate` | Calls `shutdown()` during termination; last-window closure terminates only when the controller is not busy |
-| `ContentView.swift`: `ContentView` | Renders permission, instructions, start availability, messages, and pending-release state; calls controller actions |
-| `CleaningController.swift`: `CleaningController` | Owns session UUID, current interceptor, blackout manager, lifecycle observers, main timers, and local exit-key state |
-| `AccessibilityPermission.swift`: `AccessibilityPermission` | Wraps trust checks and explicit prompt; contains an inactive Settings URL helper |
-| `BlackoutWindows.swift`: `BlackoutWindows` | Owns windows, local monitor, cursor hide accounting, and saved presentation options; exposes `show(...) -> Bool` and `hide()` |
-| `BlackoutWindows.swift`: `BlackWindow`, `BlackView` | Key-capable borderless window and opaque black view; view accepts first responder and overrides key/gesture handlers without actions |
-| `InputInterceptor.swift`: `InputInterceptor` | Owns two taps, sources, worker timer/run loop, callbacks, cancellation, heartbeat, release drainage, and recovery acknowledgment |
-| `InputInterceptor.swift`: `ExitKeyTracker` | Shared scalar/CGEvent exit decoder; inputs are key code, repeat flag, modifiers, event direction, and supplied uptime |
-| `InputInterceptor.swift`: `InputTapRequirements` | Pure metadata predicate for process, location, enablement, and required keyboard mask |
-| `EscapePressTracker.swift` | `EscapePressTracker`, `CleaningSessionPolicy`, and user-facing `CleaningExitReason` values |
+| `MyApp.swift` | Composes the app and shared controller; supplies standard About panel links; performs shutdown on normal termination |
+| `ContentView.swift` | Presents instructions, start availability, and session status |
+| `CleaningController.swift` | Owns main-actor session state, lifecycle observers, timers, exit tracking, windows, and current watchdog |
+| `BlackoutWindows.swift` | Owns black windows, the local event monitor, cursor hide accounting, and saved presentation options |
+| `InputInterceptor.swift` | Contains `SessionWatchdog` and scalar exit-key decoding, without tap creation or Accessibility APIs |
+| `EscapePressTracker.swift` | Pure Esc-sequence tracking, user-facing exit reasons, and timing policy |
+| `Tests/LogicChecks.swift` | Standalone scalar-key and timing assertions; outside the app's synchronized source group |
+| `PrivacyInfo.xcprivacy` | Privacy declarations and the approved local timing reason |
 
-`Freeze Input.xcodeproj/project.pbxproj` uses a file-system-synchronized root group for `Freeze Input/`; empty explicit Sources/Resources lists do not mean the app source is inactive. `Tests/` is outside that synchronized group and has no test target. The asset catalog contains metadata and an accent-color entry. Workspace data refers to the project itself. No scripts, CI, manifests, lockfiles, environment examples, standalone entitlement files, or additional documentation existed beyond the original README.
+AppKit objects and session transitions remain on the main actor. A background DispatchSource timer monitors the session independently of the main run loop. Its shared heartbeat/cancellation state requires synchronization; background work requests main-thread cleanup rather than manipulating windows directly.
 
-### Concurrency and lifetime
+The app target uses a file-system-synchronized source group. Empty explicit Sources/Resources lists do not imply inactive source. There is one macOS app target, no XCTest/Swift Testing target, and no checked-in shared scheme or CI configuration.
 
-App/UI and window ownership are main-actor isolated. `InputInterceptor` is explicitly `nonisolated` and `@unchecked Sendable`; correctness relies on its manual confinement and locking, not compiler-proven safety. The dedicated `Thread` retains the interceptor until its run function completes, keeping the unmanaged callback context valid through tap invalidation.
-
-Event-sequence and release-drain state live on the worker run loop. Resource publication, cancellation, heartbeat, and recovery acknowledgment use `NSLock`. Requests from the local monitor use `CFRunLoopPerformBlock` and wake the worker; callbacks enqueue UI work asynchronously rather than synchronously blocking on the main queue. Controller callbacks capture a session UUID and ignore stale notifications after stop/restart.
-
-The controller's 0.5-second heartbeat timer runs in main-run-loop common modes and also refreshes permission. The worker runs in explicit default mode, with bounded 0.25-second run-loop iterations for cancellation. Controller `shutdown()` removes observers and invalidates the heartbeat timer; session cleanup is idempotent.
-
-## Data flow and lifecycle
+## Session lifecycle
 
 ### Startup
 
-1. `ContentView.onAppear`, app activation, and the heartbeat refresh Accessibility state. **Request Access** invokes `AXIsProcessTrustedWithOptions` with the prompt option; it does not grant trust.
-2. `start()` rejects busy sessions, missing Accessibility trust, or Secure Event Input. It creates a UUID and interceptor, marks the controller busy, then waits up to two seconds for worker readiness.
-3. The worker rechecks trust/Secure Event Input and creates two active `.cgSessionEventTap` taps at `.headInsertEventTap` with `.defaultTap` options: one for key-down/up and another for modifier/pointer events. Each receives a run-loop source.
-4. `CGGetEventTapList` is queried twice, allocating the initial count plus 16 entries. Errors or a returned count beyond capacity reject startup. `InputTapRequirements` requires an enabled session tap from this process containing both key-down and key-up mask bits. It does not match a unique tap identifier, and it does not prove physical delivery.
-5. The worker installs its 50 ms health timer and sources, publishes resources under lock, enables taps unless canceled, and signals readiness. Success requires two published taps and no cancellation; enablement failure cancels startup.
-6. The controller rechecks trust, Secure Event Input, and app activity before `blackout.show(...)`. Failure calls `stop()` rather than intentionally leaving an overlay. A successful session sets `isCleaning` and installs a 50 ms local safety timer.
+Startup rejects an already-busy session and requires the app to be active. It captures a display signature, creates the watchdog and common-mode safety timer, then queues overlay installation on the main queue after the Start button event. There is no semaphore or synchronous two-second readiness wait.
 
-The two-second semaphore wait blocks the caller during startup. No asynchronous startup UI or automatic retry/backoff exists. `failureDescription` supplies startup diagnostics; some failure paths use a generic message.
+The controller installs the local event monitor and black windows, hides the cursor, saves presentation state, and requests keyboard focus with `makeKeyAndOrderFront`. The common-mode timer checks for a visible key window whose content view is first responder, for up to 0.5 seconds. It retries focus without blocking the main thread and marks cleaning active only when ready. Failure cleans up and provides a specific retry message. Session and presentation UUIDs prevent cancelled startup work from recreating an overlay or overwriting its cancellation reason. The watchdog remains active throughout startup.
 
-### Event filtering and exit
+The previous source-only visible inspection mode is removed: a local monitor with no overlay cannot provide the foreground coverage described by the product. No permission request or live global tap is used as a startup prerequisite.
 
-While active, the callback returns `nil` for selected ordinary events, suppressing their propagation. The masks include key-down/up; flags changed; left/right/other mouse down/up; mouse movement and drags; and scroll wheel. It does not parse typed strings or store input content. It reads key codes, repeat flags, and modifiers for exit decisions.
+### Local input handling
 
-The local monitor consumes supported gesture, magnify, smart magnify, rotate, swipe, begin/end gesture, pressure, direct-touch, and keyboard/modifier events delivered to this app. In normal mode it consumes monitored key/modifier events. In visible inspection mode it allows ordinary keys/modifiers through while consuming Esc and the backup-related Q events, so ordinary local keyboard consumption does not conceal a failed tap.
+The local monitor consumes supported keyboard, modifier, mouse button, mouse movement/drag, scroll, and gesture events that macOS sends to this app. Returning `nil` prevents normal dispatch within this app; it does not stop events routed to macOS or another application. Black windows cover enumerated screens, and a key-capable window receives keyboard input.
 
-On worker `finish(...)`, general filtering stops immediately unless an exit key needs drainage; `onExit` queues visual cleanup. `onFinished` clears busy state and the controller's interceptor reference after worker resource cleanup. During backup drainage, unrelated input passes through. Foreground loss during this already visually finished state is ignored so it does not interrupt the release filter; sleep/display changes can still stop it.
+The implementation examines only event metadata needed for exit recognition: event direction, virtual key code, modifier flags, repeat status, and timing. It does not convert key events into typed text, post/replay events, or keep input history.
 
-### Overlay and local safety path
+Cursor hiding is presentation only. The actual pointer can move, system gestures and reserved shortcuts can still act, and AppKit's monitor does not cover every nested event-tracking loop. Presentation options hide the Dock/menu bar and disable process-switching UI; a restricted system action may still produce an alert sound. There is no per-gesture sound suppression. The app stops when it loses foreground status. Overlay alpha is currently `1`, with no UI transparency setting.
 
-Normal `BlackoutWindows.show` requires at least one screen, saves presentation options, applies `.hideDock`, `.hideMenuBar`, and `.disableProcessSwitching`, and activates the app. It creates opaque, shadowless, borderless `.screenSaver`-level windows with `.canJoinAllSpaces`, `.fullScreenAuxiliary`, and `.stationary` behavior. The first becomes key; the cursor is hidden once. There is no native full-screen Space transition, countdown, or overlay control.
+### Esc exit
 
-`hide()` removes the local monitor, closes owned windows, balances the cursor hide, and restores saved presentation options. Display changes end the session rather than dynamically rebuilding overlays.
+`EscapePressTracker` counts five complete press/release pairs within three seconds from the first accepted key-down. Exit occurs on the fifth release. The exact three-second boundary is accepted; a later event expires the sequence. Orphan/duplicate releases, repeated key-downs, and holding Esc do not count as additional presses. Another key-down or modifier change resets the sequence.
 
-Local keyboard decoding requests worker exit and records a pending request. A local key-up can acknowledge release through the worker queue. If the request remains pending for at least 250 ms, the main safety timer calls direct controller `stop()`. The local three-minute deadline also calls direct `stop()`; unlike a pending keyboard exit, it does not first request worker drainage. Direct stop disables published taps synchronously, clears the session UUID/state, and closes overlays. If the worker is stalled, this fallback cannot guarantee exit-key drainage.
+### Backup exit and release grace
 
-### Abnormal stop and recovery
+Control + Option + Command + Q uses virtual key code 12. A qualifying non-repeat Q key-down arms backup exit; the overlay remains until the matching Q release. This avoids intentionally closing the overlay while Q is still repeating. A ten-second grace bounds a missing release, and the 180-second session maximum takes priority.
 
-Lifecycle notifications stop busy sessions for app deactivation, display changes, system/display sleep, session resignation, and system/display wake. Cleaning never automatically resumes. Permission loss detected on the main side also calls direct stop.
+This is local release handling, not a global tail filter. If the app loses foreground status or a deadline forces cleanup while a key is held, later repeat/release events may reach macOS or another app. No guarantee of post-cleanup suppression is made.
 
-Every 50 ms, a responsive worker checks Accessibility, Secure Event Input, tap count/enablement, then drainage deadline or heartbeat/session expiry. Tap timeout/user-disable notifications cause safe exit rather than repeated re-enablement. `stop()` disables published taps and stops/wakes the run loop; the worker removes sources/timer, invalidates ports, and reports completion.
+### Display-change handling
 
-Each first worker `finish(...)` queues a main-queue recovery acknowledgment behind its queued visual cleanup and schedules an independent global-queue check two seconds later. If acknowledgment has not run, `Darwin._exit(EXIT_FAILURE)` terminates the process, bypassing normal AppKit cleanup. This relies on the OS to remove owned windows/presentation; cursor restoration is externally unverified. Startup failures and direct controller stop do not themselves call this worker `finish` recovery path. No in-process watchdog guarantees recovery when all relevant threads or the OS are stalled.
+At session start, the controller records each screen's ID, full frame, and backing scale factor, sorted by ID. A display-parameters notification ends the session only if this signature differs or cannot be read. Enumeration-order differences and changes limited to `visibleFrame` do not cancel cleaning. The full frame is used because Dock/menu presentation can change the usable area without changing overlay coverage. The queued startup also rechecks the signature before creating windows. The signature is cleared before cleanup so restoration notifications cannot act on an ended session.
 
-## Data models and state
+### Safety and cleanup
 
-| State/model | Meaning and storage boundary |
+A main-run-loop heartbeat and background watchdog enforce layered recovery. The background timer checks the 180-second session maximum and a three-second heartbeat tolerance. On a failure it first requests cleanup on the main queue. If cleanup is not acknowledged within two seconds, emergency `_exit(EXIT_FAILURE)` ends the process so WindowServer can remove its windows and presentation ownership.
+
+Normal stop cancels the current watchdog/session. Session identity and cancellation prevent delayed work from an old session from terminating a newer session. Cleanup acknowledgment must follow actual cleanup, not merely queue submission. The watchdog never calls AppKit from its background queue.
+
+Cleanup removes the local monitor, closes owned windows, balances cursor hiding, restores saved presentation options, clears session state, and permits a new manual start. Sleep/session changes, display changes, foreground loss, normal shutdown, Esc, backup release, and safety expiry do not automatically resume cleaning.
+
+These timers are scheduling policies, not hard real-time recovery guarantees. A fully stalled process cannot execute its own timers. Emergency termination deliberately skips normal AppKit cleanup, so cursor and presentation restoration require physical verification.
+
+## Configuration
+
+| Setting | Current declaration |
 | --- | --- |
-| `isCleaning` | Main-actor published flag for active visual/filtering session |
-| `isBusy` | Startup/session/drain occupancy; stays true during ordinary backup-key drainage |
-| `hasPermission`, `message` | Published trust snapshot and optional user-facing diagnostic |
-| `sessionID` | In-memory UUID for stale-callback rejection; cleared before direct cleanup |
-| `EscapePressTracker` | Completed count, first press uptime, and pressed flag; no key content |
-| `ExitKeyTracker` | Owns Esc tracker and produces `(reason, releaseKey)` decisions |
-| `CleaningExitReason` | Sendable string-backed reasons used directly as English UI messages |
-| `CleaningSessionPolicy` | Static duration values and pure expiry predicates |
-| Worker state | Tap/run-loop references, cancellation, heartbeat uptime, release key/deadline, local-release set, and recovery flags |
-| Window state | Owned windows, monitor token, cursor flag, and previous presentation options |
+| App target | `Freeze Input`, output `Freeze Input.app` |
+| Platform | macOS only; Catalyst disabled |
+| Deployment target | macOS 14.0 |
+| Identity | `com.sunny.freeze-input`; marketing version 1.1.1; build 20261017 |
+| Configurations | Debug and Release; configuration-list default Release |
+| Sandbox | Enabled in both configurations; only `com.apple.security.app-sandbox = true` is needed |
+| File access | No user-selected-file entitlement is needed; no user-document workflow exists |
+| Signing | Automatic signing with a preconfigured development team; no signing material is stored in this documentation |
+| Swift | Language mode 5.0, approachable concurrency, default MainActor isolation |
+| Project format | 90 with a synchronized app source group; no pinned Xcode/compiler version |
+| Schemes | User-specific metadata exists; no shared `.xcscheme` is checked in |
 
-There are no DTO/provider boundaries, cache, schema version, migration, Keychain, database, document save, or cloud storage paths. App authorization is managed externally by macOS TCC. Session state is ephemeral and is not restored after termination or sleep. Time comparisons use monotonic system uptime; there is no timezone/session-calendar logic. The run-loop timer's initial schedule uses `CFAbsoluteTimeGetCurrent`, while policy decisions use uptime.
-
-## Important logic and edge cases
-
-### Esc sequence
-
-`EscapePressTracker.requiredPresses = 5` and `sequenceDuration = 3`. The interval starts at the first accepted key-down, and the fifth key-up must arrive no more than three seconds later. Expiry uses `elapsed > 3`, so the exact three-second boundary is accepted. Expiry is processed when the next key event arrives; no timer exits a session merely because an Esc sequence timed out.
-
-Only complete down/up pairs count. Repeats, duplicate downs, orphan ups, and duplicate ups do not add presses. Another key-down or modifier-change event resets the sequence. A long hold cannot produce five presses. A successful sequence resets tracker state and exits on the fifth release, consuming that event without an Esc tail-drain phase. Worker and local fallback use the same decoder implementation but maintain separate tracker instances.
-
-### Backup shortcut and release drainage
-
-The decoder uses virtual key code 12 and requires Control, Option, and Command on a non-repeat key-down. The `contains` check allows additional modifiers; it is not exact-modifier equality. Esc uses key code 53. These are key-code-based decisions, not localized character matching.
-
-Backup exit supplies release key 12, allowing general input while swallowing that key's repeats/release. Drainage stops on its release, an acknowledged local release, or ten seconds. A held key can send ordinary events after grace expiry. Abnormal stops bypass drainage. Session restart is prevented by `isBusy` while the normal drain remains pending.
-
-### Deadlines
-
-| Mechanism | Source value / rule |
-| --- | --- |
-| Worker startup wait | 2 seconds |
-| Worker health tick | 0.05 seconds |
-| Main heartbeat | 0.5 seconds, common modes |
-| UI unresponsive threshold | At least 3 seconds since last heartbeat |
-| Session maximum | At least 180 seconds; independently checked on worker and main side with different start timestamps |
-| Main local safety tick | 0.05 seconds, common modes |
-| Pending local keyboard exit | Direct fallback after at least 0.25 seconds |
-| Backup release grace | 10 seconds |
-| Main cleanup acknowledgment fallback | Global queue check after 2 seconds |
-
-These are scheduling policies rather than hard real-time guarantees. No warm-up, deduplication pipeline, rate limiter, retry budget, cache invalidation, or conflict-resolution subsystem exists; duplicate key-event handling is confined to the sequence tracker.
-
-## External dependencies and configuration
-
-Only system SDK frameworks are imported: SwiftUI (UI/composition), AppKit (application/window/events), Combine (observable state), Foundation (threading/time/state), ApplicationServices and Core Graphics (trust/taps/events), Carbon (Secure Event Input), and Darwin (process identity/emergency exit). `CoreGraphics` is explicitly imported by the standalone checks. Framework versions follow the selected Apple SDK; none is separately pinned.
-
-The app uses public Apple APIs, not an unofficial remote endpoint. `AccessibilityPermission.openSettings()` constructs an `x-apple.systempreferences` Accessibility URL, but the current UI does not call it. This deep link's future OS behavior is unverified and it is not a network backend.
-
-| Configuration | Current declaration / implication |
-| --- | --- |
-| Target/product | One application target named `Freeze Input`; output reference `Freeze Input.app`; `PRODUCT_NAME = $(TARGET_NAME)` |
-| Legacy metadata | `productName = MyApp` and a user scheme metadata entry remain; they do not define a second target |
-| Configurations | Debug and Release; configuration-list default is Release |
-| Platform/SDK | `SUPPORTED_PLATFORMS = macosx`, `SDKROOT = auto`, macOS deployment target 14.0, Catalyst disabled |
-| Toolchain | Swift language mode 5.0; no pinned compiler/Xcode version; project format 90, creation metadata 26.3, upgrade metadata 2700 |
-| Concurrency | Approachable concurrency enabled; default actor isolation MainActor; member import visibility upcoming feature enabled |
-| App identity | Display name `Freeze Input`; bundle ID `com.sunny.freeze-input`; marketing version 1.0; build version 20261014 |
-| Signing | Automatic signing and a preconfigured development team; machine/account portability is not established |
-| Sandbox | `ENABLE_APP_SANDBOX = NO`; `ENABLE_USER_SELECTED_FILES = readonly` does not establish a file-selection feature or an enabled sandbox |
-| Other settings | Generated Info.plist, app-group registration setting enabled, previews/localization extraction enabled; no source app-group storage or declared group entitlement file |
-| Diagnostic flag | `CleaningController.showsBlackScreen = true`; source-only false branch requires editing/rebuilding, not an environment variable |
-| Schemes | No actual `.xcscheme` file; user management metadata names entries but does not define Run/Test actions |
-
-Unused iOS/iPadOS scene/orientation settings and other platform deployment values remain in the project. The actual supported-platform declaration and AppKit/Carbon implementation are macOS-only evidence; those unused settings do not establish mobile support. No explicit architecture list or exact minimum Xcode version is declared.
-
-There is no `.xcconfig`, package manifest, lockfile, external SDK setup, backend config, environment variable lookup, API key, or secret-file requirement in the inspected implementation. No certificates/private keys were read or copied for this task.
-
-## Error handling and logging
-
-Startup returns `Bool` plus a lock-protected failure description. User-facing errors cover missing trust/Secure Event Input, tap/source creation failure, ineffective keyboard coverage, and a generic unsafe-start condition. Runtime reasons distinguish permission loss, tap failure, safety expiry, heartbeat failure, lifecycle changes, and user exit. There is no structured error protocol, automatic retry/backoff, or persistent error history; the user manually resolves prerequisites and retries.
-
-There is no app logging/telemetry pipeline or input-content logging. The standalone check executable prints a PASS summary only after assertions complete. No network error redaction path is needed because no network/credential flow exists. Cancellation is an idempotent tap-disable/run-loop-stop operation; UUID guards protect UI from late worker callbacks. No automatic re-enable loop masks a tap disabled by the OS.
+Unused non-macOS deployment and interface-orientation settings do not create mobile support. Legacy `MyApp` product metadata does not identify a second app target. SDK/type compatibility and signed entitlement generation must be checked in a fresh manual Build/Run.
 
 ## Security and privacy
 
-Input interception requires Accessibility trust and a foreground session. The source reads only event metadata needed to filter and identify exits, without converting it into typed text, replaying events, writing it to disk, or uploading it. This is source inspection evidence, not a live traffic or OS privacy audit. There is no root privilege request, private API integration, kernel extension, or SIP modification in the repository.
+There is no backend, network request, persistent input storage, database, account, advertising, analytics, tracking SDK, or third-party dependency. App state remains in memory and an active session is not restored after restart. No root privileges, kernel extension, private API, arbitrary Apple Event control, or SIP modification is required.
 
-The app is explicitly unsandboxed. The repository does not demonstrate App Store eligibility or a signed/notarized release. No authentication, token storage, Keychain, TLS/pinning, database encryption, WebView, App Attest, APNs, cloud sync, or remote execution is implemented. No credentials are needed for normal source-level logic checks; signing and OS authorization have separate external boundaries.
+This version does not request or depend on Accessibility or Input Monitoring permission. Old grants from a previous installation are not required and may be removed manually in System Settings. Opening the About panel's privacy/support links launches an external website; GitHub handles that interaction under its own policy. The app itself does not send input events to GitHub.
 
-Safety is fail-closed at startup: unsuccessful trust checks, secure input, missing effective keyboard coverage, or failed tap enablement prevent entry into the normal overlay session. Runtime anomalies favor releasing interception and restoring the UI rather than retrying silently. These choices reduce risk without proving all physical input can be blocked. Force Quit is not disabled through presentation options, but its keyboard shortcut may be intercepted; use backup exit or wait for safety release.
+`PrivacyInfo.xcprivacy` declares `NSPrivacyTracking = false`, an empty tracking-domain list, and an empty collected-data-type list. `NSPrivacyAccessedAPITypes` declares `NSPrivacyAccessedAPICategorySystemBootTime` with reason `35F9.1`. The app uses `ProcessInfo.processInfo.systemUptime` for elapsed-time calculations, heartbeat checks, focus and exit-release deadlines, and the cleaning-session maximum. It does not transmit that timing information or use it for fingerprinting.
 
-## Testing
+The file resides inside the target's synchronized source group. Xcode is expected to copy it into `Freeze Input.app/Contents/Resources/PrivacyInfo.xcprivacy`; this has not been verified by a new Build or Archive. Validate the final bundle location and Xcode privacy report manually. A valid source plist does not establish successful resource processing or server acceptance.
 
-`Tests/LogicChecks.swift` is an `@main` executable using Foundation/CoreGraphics and `precondition`, not XCTest or Swift Testing. It covers:
+The sandbox configuration narrows resource access but is not evidence of a complete security audit, final distribution signing, or App Store approval. Final App Store Connect privacy answers must be checked against the complete submitted product; the manifest does not fill those answers automatically. The [Apple API reason list](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype) and [manifest packaging guidance](https://developer.apple.com/documentation/bundleresources/adding-a-privacy-manifest-to-your-app-or-third-party-sdk) describe the declarations and bundle placement.
 
-- Five complete Esc pairs, the exact three-second boundary, timeout just beyond it, state reset, duplicate/orphan events, repeats, and long holds.
-- CGEvent exit decoding and the scalar path used by the local fallback.
-- Sequence reset by another key-down or modifier change; backup required modifiers, wrong key, repeat, and key-up rejection.
-- Keyboard metadata acceptance/rejection for empty lists, partial/mouse-only masks, disabled taps, other processes, and wrong tap locations.
-- Pure 180-second session and three-second heartbeat predicates immediately before and at their thresholds.
+## Testing and validation
 
-The [README standalone command](README.md#development-and-validation) compiles two production files plus the check file. It constructs in-memory `CGEvent` objects, does not post events, and does not call the live interceptor startup. It needs a suitable macOS SDK/compiler and must be run without disabling assertions. It does not reproduce the full app target's compilation settings.
+The standalone `Tests/LogicChecks.swift` executable uses `precondition` assertions for scalar exit-key decisions, Esc edge cases, and pure timing policies. It does not construct a real cleaning session or install a local/global monitor. Do not disable assertions when running it. The manual command is documented in the [README](README.md#development-and-validation).
 
-**Test-covered does not mean verified:** No check executable, app build, test, or static analyzer was run in this task. There is no automated coverage for controller/window lifecycle, live taps, release-drain concurrency, startup races, emergency termination, cursor balancing, or OS gesture behavior. No CI or checked-in test scheme exists.
+The sandbox change did not execute those checks or any Build/Test. Syntax parsing cannot establish framework type compatibility; property-list validation cannot prove signed entitlements. There is no automated UI, controller/window-lifecycle, watchdog-race, emergency-exit, or physical event coverage.
 
 ### Manual runtime validation
 
-The following is an unexecuted hardware checklist, not a report of passing results:
+The following remains a manual checklist; the scoped user observations above do not mark these items as passed:
 
-- Permission: first launch, denial, later grant, active revocation, rebuilt-app identity changes, and manual re-add/relaunch.
-- Unsafe startup: missing permission or Secure Event Input must leave no black overlay or hidden cursor and preserve usable ordinary input.
-- Displays: black coverage, menu bar/Dock, notch, scaling, mirroring, multiple screens, Spaces, an existing full-screen app, and hot-plug exit.
-- Input: internal/external keyboards and pointers; left/right/other buttons, movement, drags, and scrolling. Check actual event suppression; pointer position alone is insufficient evidence.
-- Esc: one to four presses do not exit; fifth release within three seconds does; exact deadline, expiry, repeats, long hold, and resets work; no stray Esc reaches another app. Check any audible key feedback without assuming its cause.
-- Backup: exit on required modifier/Q key-down, no stray Q, release/repeat drainage, grace expiry, and restart availability.
-- No-input timeout: the three-minute deadline releases filtering and overlays without receiving events.
-- Gestures: test AppKit gestures separately from Mission Control/Spaces/Show Desktop and record system bypasses.
-- Lifecycle: sleep/wake, lid close/open, lock/user switch, deactivation, display changes, normal Quit, and Force Quit; verify no automatic resumption.
-- Failure recovery: tap timeout/disablement, main-thread-only stall for heartbeat release and subsequent emergency termination, blocked cleanup during Esc/backup exit, and worker-stall local fallback. Pausing all threads in a debugger does not validate independent watchdog behavior.
-- Repeated sessions: no residual windows, cursor hide imbalance, monitors, taps, or threads.
+- Build Debug and Release, inspect the signed App Sandbox entitlement, and run with no old Accessibility/Input Monitoring grants on a clean user account or Mac.
+- Confirm the final built app contains a valid manifest at `Contents/Resources/PrivacyInfo.xcprivacy`, includes the local timing declaration, and produces an accurate Xcode privacy report.
+- Verify start/stop and all failure paths leave no residual monitor, window, hidden cursor, or presentation setting.
+- Verify focus-readiness success and timeout keep the UI responsive, preserve lifecycle cancellation messages, and never leave an unusable overlay.
+- Verify hiding/restoring Dock/menu presentation does not falsely end cleaning, while actual screen ID/frame/scale changes still stop the session.
+- Test internal/external keyboards, mouse buttons, movement, drags, scrolling, trackpad gestures, and pressure input where available. Distinguish local event consumption from actual systemwide suppression.
+- Test one through five Esc presses, the exact sequence boundary, timeout, long hold, repeats, other-key/modifier resets, and no unintended Esc action after normal exit.
+- Test the backup chord, Q release, long-held Q, missing-release grace, modifiers released in different orders, the three-minute deadline taking priority, and starting another session.
+- Test black coverage on multiple/scaled/mirrored displays, notches, Spaces, existing full-screen apps, and display hot-plug.
+- Test Mission Control, Spaces, Show Desktop, reserved shortcuts, Touch ID, power/media/brightness keys, and document system bypasses rather than treating them as blocked.
+- Test deactivation, sleep/wake, lid close/open, lock/user switch, normal Quit, and Force Quit; verify no automatic session resumption.
+- Test UI-only stalls, cleanup that cannot execute, independent watchdog deadlines, normal cancellation, and a quick new session after stop. Pausing all threads does not test independent watchdog behavior.
+- Verify emergency process exit removes overlays and restores a usable cursor/presentation state.
+- Test the minimum supported macOS and current macOS on supported Intel and Apple silicon hardware.
+- Verify **Freeze Input → About Freeze Input** shows version/build and opens publicly accessible privacy/support destinations.
 
-If keyboard exit fails after an Xcode launch, report startup/status messages and whether the current three-minute timeout works. A successful visual timeout does not prove the keyboard callback path. If effective keyboard access is rejected, manually reauthorize the exact running app and relaunch; do not treat unrelated permissions as a substitute for diagnosis. Prior README anecdotes about an older five-minute timeout are not current-version evidence and are not retained as verified results.
+## Remaining development work
 
-## Known limitations and technical debt
-
-- Public session taps and local monitors do not disable hardware or guarantee interception of system-reserved events. Secure Event Input can prevent keyboard delivery, and a brief notification/polling gap can exist before abnormal-state cleanup.
-- The metadata predicate accepts any qualifying enabled tap from this PID at the required location, rather than identifying the newly created keyboard tap. Its purpose is startup screening, not proof of end-to-end delivery.
-- `@unchecked Sendable`, unmanaged callback context, manual locks, two independent exit trackers, and direct fallback cleanup require careful concurrency review. Current logic checks do not cover these lifetimes or races.
-- The startup semaphore can block the UI for up to two seconds. UI heartbeat checks and cleanup acknowledgment are scheduled work, not hard recovery guarantees.
-- A fully stalled worker depends partly on macOS disabling an unresponsive tap. A fully stalled process cannot execute its own cleanup. Emergency `_exit` deliberately skips normal restoration and needs physical verification.
-- Source-only inspection mode is inaccessible through the UI and still intercepts real input. Foreground loss ends either mode.
-- User-specific workspace/scheme metadata and automatic signing configuration reduce portability. No shared scheme, pinned toolchain, CI, release script, notarization process, or project-wide license is provided.
-- Stale `MyApp` metadata and unused non-macOS settings can confuse setup but do not represent additional implemented platforms.
-
-## Design decisions
-
-- Separate keyboard/pointer taps plus keyboard-mask validation guard against treating a mouse-capable tap as sufficient keyboard access. The extra metadata query increases startup complexity without proving physical delivery.
-- Overlays are created only after worker startup and a second prerequisite check. Failure paths favor canceling cleaning rather than showing a black screen without validated filter setup.
-- Dedicated worker-run-loop ownership keeps event callbacks short and avoids synchronous UI dispatch. Explicit manual synchronization trades compiler enforcement for cross-thread control.
-- Five complete Esc pairs provide a deliberate release-based exit without needing an Esc tail filter; backup Q requires bounded drainage to avoid leaking its release/repeats.
-- Layered worker/main deadlines, heartbeat checks, lifecycle stops, and emergency termination favor releasing input on failure. None is presented as a universal OS-failure guarantee.
-- Directly composed concrete components keep this small local app simple; pure sequence/policy/metadata helpers provide existing test extension points. There is no provider-neutral adapter layer because no providers exist.
-- In-memory-only state avoids storing input history or recovering an active cleaning session after restart. No network dependency is required.
-
-## Future development
-
-The following are **Planned / Not implemented recommendations**, grounded in current extension points:
-
-- Add tests around `CleaningController` session transitions and `InputInterceptor` drainage/cancellation ownership, preserving main-actor window ownership and worker serialization. Any abstractions should keep event content ephemeral and never post real events in offline tests.
-- Add a portable shared scheme and toolchain/CI documentation after confirming supported Xcode versions. Keep pure logic checks distinct from permission-dependent hardware validation.
-- Consider asynchronous startup around the existing readiness boundary to reduce UI blocking, while preserving cancellation, UUID stale-result protection, and the rule that overlays appear only after successful startup.
-- If visible inspection becomes a supported setting, connect it through controller configuration with clear user-facing behavior; retain real permission checks, exit paths, and safety limits.
-- Define a project license and distribution/signing process separately before publication. Do not infer entitlements, App Store eligibility, or broader system access from current settings.
-
-No new permission, privileged helper, external provider, or persistent input capture is implied by these recommendations.
+The following are recommendations, not implemented guarantees: add lifecycle/watchdog regression coverage, establish a shared scheme and CI/toolchain policy, document a distribution/signing process, and define a project license. A global input-lock feature would require a separate feasibility and distribution decision; it is not supplied by this foreground-overlay design.

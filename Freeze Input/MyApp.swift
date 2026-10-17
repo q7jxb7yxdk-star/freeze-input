@@ -12,8 +12,33 @@ struct FreezeInputApp: App {
         }
         .windowResizability(.contentSize)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Freeze Input") {
+                    NSApp.orderFrontStandardAboutPanel(options: [.credits: Self.aboutLinks])
+                }
+            }
             CommandGroup(replacing: .newItem) {}
         }
+    }
+
+    private static var aboutLinks: NSAttributedString {
+        let links = NSMutableAttributedString(string: "")
+        links.append(NSAttributedString(
+            string: "Privacy Policy",
+            attributes: [.link: "https://github.com/q7jxb7yxdk-star/freeze-input/blob/main/PRIVACY_POLICY.md"]
+        ))
+        links.append(NSAttributedString(string: "\n\n"))
+        links.append(NSAttributedString(
+            string: "Support / Contact",
+            attributes: [.link: "https://github.com/q7jxb7yxdk-star/freeze-input/issues"]
+        ))
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        links.addAttributes([
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .paragraphStyle: paragraph
+        ], range: NSRange(location: 0, length: links.length))
+        return links
     }
 }
 

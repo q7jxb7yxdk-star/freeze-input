@@ -11,47 +11,43 @@ struct ContentView: View {
                 .accessibilityHidden(true)
             Text("Freeze Input")
                 .font(.largeTitle.bold())
-            Text("Clean your screen, keyboard and trackpad with fewer accidental inputs.")
+            Text("Reduce accidental input while cleaning your screen, keyboard and trackpad.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 10) {
                 Label("Press Esc 5 times within 3 seconds to finish.", systemImage: "escape")
-                Label("Backup exit: Control + Option + Command + Q.", systemImage: "keyboard")
+                Label("Backup exit: Control + Option + Command + Q, then release Q.", systemImage: "keyboard")
                 Label("Automatically finishes after 3 minutes.", systemImage: "clock")
             }
             .font(.callout)
 
-            if !controller.hasPermission {
-                VStack(alignment: .leading, spacing: 12) {
-                    Label("Accessibility permission required", systemImage: "lock.shield")
-                        .font(.headline)
-                    Text("In System Settings → Privacy & Security, allow Freeze Input under Accessibility (called Device Control and Data Access on some macOS versions). This is needed to block input. Return here after granting access.")
-                        .font(.callout)
-                    HStack {
-                        Button("Request Access") { controller.requestPermission() }
-                    }
-                }
-                .padding()
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-            }
             Button("Start Cleaning") { controller.start() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(!controller.hasPermission || controller.isBusy)
+                .disabled(controller.isBusy)
 
+            if controller.isBusy && !controller.isCleaning {
+                Text("Preparing the cleaning cover…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             if let message = controller.message {
                 Text(message)
                     .font(.callout)
                     .multilineTextAlignment(.center)
                     .accessibilityLabel(message)
             }
-            if controller.isBusy && !controller.isCleaning {
-                Text("Release the exit key before starting again.")
+            if controller.isWaitingForExitRelease {
+                Text("Release Q to finish cleaning.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-            Text("System gestures, Touch ID and the power button may still work. This app does not disable hardware or record your typing.")
+            Text("Only input sent to the cleaning cover is blocked. System shortcuts, gestures, Touch ID and the power button may still work. Some system gestures may play an alert sound. Cleaning ends if you switch away from Freeze Input.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text("No Accessibility or Input Monitoring permission is required. Your typing is not recorded.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -59,6 +55,5 @@ struct ContentView: View {
         .padding(32)
         .frame(width: 510)
         .fixedSize(horizontal: false, vertical: true)
-        .onAppear { controller.refreshPermission() }
     }
 }

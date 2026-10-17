@@ -1,26 +1,49 @@
 import AppKit
-import Carbon
 import Combine
 
 @MainActor
 final class CleaningController: ObservableObject {
     static let shared = CleaningController()
-    /// Set to true for normal cleaning; false keeps the screen/cursor visible
-    /// so input interception can be inspected. Requires rebuilding the app.
-    static let showsBlackScreen = true
     @Published private(set) var isCleaning = false
     @Published private(set) var isBusy = false
-    @Published private(set) var hasPermission = AccessibilityPermission.isGranted
+    @Published private(set) var isWaitingForExitRelease = false
     @Published private(set) var message: String?
     private let blackout = BlackoutWindows()
-    private var interceptor: InputInterceptor?
+    private var watchdog: SessionWatchdog?
     private var sessionID: UUID?
-    private var heartbeatTimer: Timer?
-    private var localSafetyTimer: Timer?
-    private var localExitKeys = ExitKeyTracker()
+    private var safetyTimer: Timer?
+    private var exitKeys = ExitKeyTracker()
     private var cleaningStartedAt: TimeInterval?
-    private var pendingLocalExit: (reason: CleaningExitReason, requestedAt: TimeInterval)?
+    private var focusDeadline: TimeInterval?
+    private var sessionDisplays: [DisplayConfiguration]?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+
+    private struct DisplayConfiguration: Equatable {
+        let id: UInt32
+        let frame: NSRect
+        let scale: CGFloat
+    }
+
+    private static func currentDisplays() -> [DisplayConfiguration]? {
+        var displays: [DisplayConfiguration] = []
+        for screen in NSScreen.screens {
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return nil
+            }
+            // Full frame is independent of the space occupied by the Dock/menu bar.
+            displays.append(DisplayConfiguration(id: number.uint32Value,
+                                                 frame: screen.frame,
+                                                 scale: screen.backingScaleFactor))
+        }
+        guard !displays.isEmpty else { return nil }
+        // Screen enumeration order alone is not a layout change.
+        return displays.sorted { $0.id < $1.id }
+    }
+
+    private var displayConfigurationChanged: Bool {
+        guard let sessionDisplays, let current = Self.currentDisplays() else { return true }
+        return current != sessionDisplays
+    }
 
     init() {
         observe(NSApplication.didResignActiveNotification, in: .default, reason: .foregroundLost)
@@ -31,164 +54,119 @@ final class CleaningController: ObservableObject {
         observe(NSWorkspace.sessionDidResignActiveNotification, in: workspace, reason: .sleep)
         observe(NSWorkspace.didWakeNotification, in: workspace, reason: .sleep)
         observe(NSWorkspace.screensDidWakeNotification, in: workspace, reason: .sleep)
-        let token = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshPermission() }
-        }
-        observers.append((.default, token))
-        // Runs in common modes, so ordinary menu tracking does not starve the heartbeat.
-        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.interceptor?.pulse()
-                self?.refreshPermission()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        heartbeatTimer = timer
-    }
-
-    func refreshPermission() {
-        hasPermission = AccessibilityPermission.isGranted
-        if isCleaning, !hasPermission { stop(reason: .permissionLost) }
-    }
-
-    func requestPermission() {
-        AccessibilityPermission.request()
-        refreshPermission()
     }
 
     func start() {
         guard !isBusy else { return }
-        refreshPermission()
-        guard hasPermission else {
-            message = "Allow Freeze Input in System Settings → Privacy & Security → Accessibility (or Device Control and Data Access), then return here."
+        guard NSApp.isActive else {
+            message = "Return to Freeze Input, then choose Start Cleaning again."
             return
         }
-        guard !IsSecureEventInputEnabled() else {
-            message = CleaningExitReason.secureInput.rawValue
+        guard let displays = Self.currentDisplays() else {
+            message = "Your display setup could not be checked. Make sure your displays are awake and connected, then try again."
             return
         }
-        message = nil
-        isBusy = true
+        // Capture before changing presentation options, including during startup.
+        sessionDisplays = displays
         let id = UUID()
         sessionID = id
-        let input = InputInterceptor(onExit: { [weak self] reason in
-            DispatchQueue.main.async {
-                guard let self, self.sessionID == id else { return }
-                // The worker has already released general input interception.
-                // Keep it alive only to consume release/repeat events for the exit key.
-                self.clearLocalSafety()
-                self.isCleaning = false
-                self.blackout.hide()
-                self.message = reason.rawValue
-            }
-        }, onFinished: { [weak self] in
-            DispatchQueue.main.async {
-                guard let self, self.sessionID == id else { return }
-                self.clearLocalSafety()
-                self.blackout.hide()
-                self.isCleaning = false
-                self.isBusy = false
-                self.interceptor = nil
-                self.sessionID = nil
-            }
-        })
-        interceptor = input
-        guard input.start() else {
-            stop(reason: .tapDisabled)
-            message = input.failureDescription
-            return
-        }
-        // Recheck after the worker startup wait; avoid entering a cancelled session.
-        guard AccessibilityPermission.isGranted, !IsSecureEventInputEnabled(),
-              NSApp.isActive, blackout.show(showsBlackScreen: Self.showsBlackScreen,
-                                           onKeyEvent: { [weak self] event in
-                  self?.handleLocalKey(event)
-              }) else {
-            stop(reason: .stopped)
-            message = "Cleaning could not start safely. Return to Freeze Input and try again."
-            return
-        }
-        isCleaning = true
-        if !Self.showsBlackScreen {
-            message = "Input filtering is active with the screen visible. Press and release Esc 5 times within 3 seconds to finish."
-        }
+        isBusy = true
+        message = nil
+        exitKeys = ExitKeyTracker()
+        isWaitingForExitRelease = false
         cleaningStartedAt = ProcessInfo.processInfo.systemUptime
+        watchdog = SessionWatchdog { [weak self] reason in
+            DispatchQueue.main.async {
+                guard let self, self.sessionID == id else { return }
+                self.stop(reason: reason)
+            }
+        }
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkLocalSafety() }
+            MainActor.assumeIsolated { self?.checkSafety() }
         }
         RunLoop.main.add(timer, forMode: .common)
-        localSafetyTimer = timer
+        safetyTimer = timer
+        // Let the Start button's event finish before changing the key window.
+        DispatchQueue.main.async { [weak self] in self?.beginOverlay(for: id) }
+    }
+
+    private func beginOverlay(for id: UUID) {
+        guard sessionID == id else { return }
+        guard !displayConfigurationChanged else { stop(reason: .displayChanged); return }
+        let failure = blackout.show(onKeyEvent: { [weak self] event in self?.handleLocalKey(event) })
+        // A lifecycle notification may already have stopped this session. Preserve its reason.
+        guard sessionID == id else { return }
+        if let failure {
+            stop()
+            message = failure
+            return
+        }
+        guard NSApp.isActive else { stop(reason: .foregroundLost); return }
+        focusDeadline = ProcessInfo.processInfo.systemUptime + 0.5
     }
 
     private func handleLocalKey(_ event: NSEvent) {
-        if event.type == .keyUp, pendingLocalExit != nil {
-            // The release may arrive before the worker services requestExit.
-            interceptor?.acknowledgeLocalRelease(keyCode: Int64(event.keyCode))
-        }
         guard isCleaning else { return }
         if event.type == .flagsChanged {
-            localExitKeys.reset()
+            exitKeys.modifiersChanged()
             return
         }
         var flags: CGEventFlags = []
         if event.modifierFlags.contains(.control) { flags.insert(.maskControl) }
         if event.modifierFlags.contains(.option) { flags.insert(.maskAlternate) }
         if event.modifierFlags.contains(.command) { flags.insert(.maskCommand) }
-        let now = ProcessInfo.processInfo.systemUptime
-        if let decision = localExitKeys.handle(keyCode: Int64(event.keyCode),
-                                               isDown: event.type == .keyDown,
-                                               isRepeat: event.type == .keyDown && event.isARepeat,
-                                               modifiers: flags, now: now) {
-            requestLocalExit(decision.reason, draining: decision.releaseKey, now: now)
-        }
+        let reason = exitKeys.handle(keyCode: Int64(event.keyCode),
+                                     isDown: event.type == .keyDown,
+                                     isRepeat: event.type == .keyDown && event.isARepeat,
+                                     modifiers: flags, now: ProcessInfo.processInfo.systemUptime)
+        isWaitingForExitRelease = exitKeys.isWaitingForBackupRelease
+        if let reason { stop(reason: reason) }
     }
 
-    private func checkLocalSafety() {
-        guard isCleaning, let cleaningStartedAt else { return }
+    private func checkSafety() {
+        guard isBusy, let cleaningStartedAt else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        if let pendingLocalExit {
-            // If the worker cannot service the fallback, the UI can still release
-            // input and close its windows without waiting for a worker callback.
-            if now - pendingLocalExit.requestedAt >= 0.25 {
-                stop(reason: pendingLocalExit.reason)
-            }
-        } else if CleaningSessionPolicy.shouldExpire(startedAt: cleaningStartedAt, now: now) {
+        watchdog?.pulse()
+        if CleaningSessionPolicy.shouldExpire(startedAt: cleaningStartedAt, now: now) {
             stop(reason: .safetyDeadline)
+        } else if !NSApp.isActive {
+            stop(reason: .foregroundLost)
+        } else if let focusDeadline {
+            if blackout.hasKeyboardFocus {
+                self.focusDeadline = nil
+                isCleaning = true
+            } else if now >= focusDeadline {
+                stop()
+                message = "The cleaning cover could not become ready for keyboard input. Return to Freeze Input and try again."
+            } else {
+                blackout.requestKeyboardFocus()
+            }
+        } else if isCleaning, exitKeys.releaseWaitExpired(now: now) {
+            stop(reason: .backupShortcut)
         }
-    }
-
-    private func requestLocalExit(_ reason: CleaningExitReason, draining key: Int64?,
-                                  now: TimeInterval) {
-        guard pendingLocalExit == nil else { return }
-        pendingLocalExit = (reason, now)
-        interceptor?.requestExit(reason, draining: key)
-    }
-
-    private func clearLocalSafety() {
-        localSafetyTimer?.invalidate()
-        localSafetyTimer = nil
-        cleaningStartedAt = nil
-        pendingLocalExit = nil
-        localExitKeys = ExitKeyTracker()
     }
 
     func stop(reason: CleaningExitReason = .stopped) {
-        clearLocalSafety()
-        sessionID = nil // Ignore late callbacks from a previous worker.
-        interceptor?.stop()
-        interceptor = nil
-        blackout.hide()
+        sessionID = nil // Ignore queued callbacks from an older session.
         isCleaning = false
+        safetyTimer?.invalidate()
+        safetyTimer = nil
+        cleaningStartedAt = nil
+        focusDeadline = nil
+        sessionDisplays = nil
+        exitKeys = ExitKeyTracker()
+        isWaitingForExitRelease = false
+        let previousWatchdog = watchdog
+        watchdog = nil
+        blackout.hide()
+        // Cancellation acknowledges actual AppKit cleanup, not merely a queued callback.
+        previousWatchdog?.stop()
         isBusy = false
         message = reason.rawValue
     }
 
     func shutdown() {
         stop()
-        heartbeatTimer?.invalidate()
-        heartbeatTimer = nil
         for (center, token) in observers { center.removeObserver(token) }
         observers.removeAll()
     }
@@ -197,10 +175,8 @@ final class CleaningController: ObservableObject {
                          reason: CleaningExitReason) {
         let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.isBusy else { return }
-                // Preserve the Esc/Q release filter if another app gains focus
-                // after visual exit. Sleep and display changes still stop it.
-                if reason == .foregroundLost && !self.isCleaning { return }
+                guard let self, self.sessionID != nil else { return }
+                if reason == .displayChanged, !self.displayConfigurationChanged { return }
                 self.stop(reason: reason)
             }
         }

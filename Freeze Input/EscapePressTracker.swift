@@ -44,13 +44,10 @@ nonisolated enum CleaningExitReason: String, Sendable {
     case escape = "Cleaning finished."
     case backupShortcut = "Cleaning stopped with the backup shortcut."
     case safetyDeadline = "Cleaning stopped after the three-minute safety limit."
-    case tapDisabled = "Input interception stopped unexpectedly. Cleaning has been cancelled."
-    case permissionLost = "Accessibility permission was removed. Cleaning has been cancelled."
-    case secureInput = "Secure Event Input is active. Close password entry or the app using secure input, then try again."
-    case interfaceUnresponsive = "The interface stopped responding. Input interception has been released."
-    case sleep = "Cleaning stopped because the Mac went to sleep or the session became inactive."
-    case foregroundLost = "Cleaning stopped because Freeze Input left the foreground."
-    case displayChanged = "Cleaning stopped because the display configuration changed."
+    case interfaceUnresponsive = "Cleaning stopped because the app was not responding. Try again; if this happens again, quit and reopen Freeze Input."
+    case sleep = "Cleaning stopped because your Mac slept or your user session changed. Choose Start Cleaning when you are ready."
+    case foregroundLost = "Cleaning stopped because Freeze Input is no longer the active app. Return here and choose Start Cleaning to start again."
+    case displayChanged = "Cleaning stopped because your display setup changed or could not be checked. Check your connected displays, then choose Start Cleaning again."
     case stopped = "Cleaning stopped."
 }
 

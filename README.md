@@ -1,108 +1,96 @@
 # Freeze Input
 
-Freeze Input is a native macOS app that reduces accidental keyboard and pointer input while cleaning a screen, keyboard, or trackpad. It uses SwiftUI for its control window, AppKit for black overlays, and public Core Graphics event taps for input filtering. It does not disable input hardware.
+Freeze Input is a native macOS app that reduces accidental input while you clean your screen, keyboard, or trackpad. It shows black windows on connected screens and consumes supported keyboard, pointer, scroll, and gesture events delivered to those foreground windows. It does not disable hardware or filter input systemwide.
 
 ## Implementation and evidence status
 
-- **Implemented:** Accessibility-gated session startup, keyboard and pointer event filtering, black windows on connected screens, local AppKit gesture filtering, exit-key handling, and safety/recovery paths are connected to the app's normal execution path.
-- **Test-covered:** Standalone checks exist for Esc sequences, exit-event decoding, keyboard-tap metadata validation, and safety/heartbeat boundaries. Their presence does not establish a passing run.
-- **Verified in this task (2026-10-15):** Repository/source inspection, property-list syntax validation, and documentation consistency, path, formatting, and change-scope checks only. No app build or test suite was executed.
-- **Externally unverified:** Accessibility authorization, physical input delivery/suppression, displays, cursor recovery, system gestures, emergency termination, signing, and distribution require validation on a Mac.
-- **Experimental / Inactive:** A source-only visible inspection mode exists but is disabled by the current `showsBlackScreen = true` setting. It still creates real input filters; it is not a mock or demo.
-- **Planned / Not implemented:** Suggested extensions are listed in the [technical documentation](TECHNICAL_DOCUMENTATION.md#future-development); they are not available features.
+- **Implemented:** App Sandbox configuration, foreground black overlays, local AppKit event filtering, deliberate keyboard exits, nonblocking startup, lifecycle cleanup, independent safety monitoring, and a privacy manifest.
+- **Test-covered:** Standalone assertions cover Esc sequences, scalar exit-key decisions, and safety time boundaries. Test source is not evidence of a passing execution.
+- **Validation boundary for the current changes (2026-10-17):** Source, property-list, syntax, and diff checks only. The agent did not perform Build/Test, standalone check execution, signing, Archive, or runtime validation for these changes. Earlier checks of the non-sandboxed implementation do not validate this version.
+- **User-reported observations:** Esc exited a cleaning session normally. Pinching the thumb and three fingers produced a system alert sound while the overlay remained active. Temporarily removing the process-switching restriction removed the sound but allowed a screen switch that stopped cleaning; the restriction was restored. These observations do not validate every gesture, device, or OS version.
+- **Externally unverified:** Actual sandbox entitlements in a signed build, input delivery, all display/Spaces configurations, cursor restoration, emergency termination, and App Store submission or approval.
 
-## Features
+## Features and limits
 
-- Requires Accessibility trust and rejects startup while Secure Event Input is active.
-- Creates separate keyboard and pointer session event taps. Startup requires both taps and an enabled keyboard tap belonging to this process with key-down and key-up coverage before showing black windows.
-- Covers each enumerated screen with a plain black window, hides the cursor, and changes Dock/menu presentation during cleaning.
-- Exits on the fifth complete Esc press/release within three seconds, on Control + Option + Command + Q, or at a three-minute safety deadline.
-- Stops for permission loss, tap disablement, Secure Event Input, app deactivation, sleep/session changes, and display changes. It never resumes automatically.
-- Includes UI heartbeat monitoring and an independent emergency process-exit fallback for a blocked main queue.
+- Starts a foreground cleaning session without requesting Accessibility or Input Monitoring permission.
+- Covers connected screens with black windows, hides the cursor, and changes Dock/menu presentation during cleaning. The hidden pointer may still move within macOS.
+- Consumes supported events sent to this app through a local AppKit monitor. Events handled by macOS or sent to another app are outside its scope.
+- Exits on the fifth complete Esc press/release within three seconds.
+- Supports Control + Option + Command + Q as a backup exit. The overlay stays until Q is released, or a ten-second release grace expires; the three-minute session deadline takes priority.
+- Automatically stops after three minutes or when the app loses the foreground, the Mac sleeps/session changes, or the display configuration changes. Sessions do not resume automatically.
+- Uses a background watchdog to request cleanup if the UI heartbeat stops. If main-thread cleanup cannot be acknowledged, an emergency process exit limits exposure to a stuck overlay.
+- Provides **Privacy Policy** and **Support / Contact** links in **Freeze Input → About Freeze Input**.
 
-These are source implementations, not guarantees that macOS delivers every hardware or reserved system event to the app. See [Known limitations](#known-limitations).
+Mission Control, Spaces, Show Desktop, reserved shortcuts, Touch ID, power/media/brightness keys, and system gestures may continue to work or produce a system alert sound when restricted. This is a foreground cleaning cover, not a global input lock. Do not rely on it as a security or access-control feature.
 
-## Requirements
+## Requirements and setup
 
-| Item | Repository evidence |
+| Item | Current declaration |
 | --- | --- |
-| Platform | macOS only: `SUPPORTED_PLATFORMS = macosx`; Mac Catalyst disabled |
-| Minimum OS | macOS 14.0 in Debug and Release project settings |
-| Swift | `SWIFT_VERSION = 5.0` is the language mode, not a pinned compiler version |
-| Xcode / SDK | No exact minimum or pinned version is declared. Project metadata records creation with tools 26.3 and upgrade check 2700; these do not establish compatibility. `SDKROOT = auto` |
-| Project format | `objectVersion = 90`; uses a file-system-synchronized source group, requiring an Xcode version that supports this project format |
-| Dependencies | Apple frameworks only; no third-party dependency manifest, package lockfile, or dependency installation step |
-| Runtime permission | Accessibility trust for the running app identity |
-| Architecture | No explicit CPU architecture restriction is declared; Apple Silicon/Intel compatibility has not been verified in this task |
+| Platform | macOS only; Mac Catalyst disabled |
+| Minimum OS | macOS 14.0 |
+| Swift | Swift language mode 5.0; no pinned compiler version |
+| Project | `Freeze Input.xcodeproj`, project format 90, file-system-synchronized app source group |
+| Configurations | Debug and Release |
+| App identity | `com.sunny.freeze-input`; version 1.1.1; build 20261017 |
+| Sandbox | Enabled in Debug and Release; only the App Sandbox entitlement is needed |
+| Dependencies | Apple SDK frameworks only; no third-party dependency installation |
+| Signing | Automatic signing with a configured development team; review it for your account |
 
-## Installation and setup
+Open the project in a compatible Xcode installation, select the **Freeze Input** app target and local Mac destination, and Build/Run manually. There is no iOS/iPadOS target or Simulator workflow. User-specific scheme metadata exists, but no shared `.xcscheme`, pinned toolchain, or CI pipeline is checked in.
 
-1. Obtain a local checkout and work from its repository root. No repository clone URL is supplied here because it is not declared in project setup files.
-2. Open `Freeze Input.xcodeproj` in a compatible Xcode installation.
-3. Select the **Freeze Input** app target and the local Mac run destination. The project has Debug and Release configurations.
-4. Select the scheme for that target in Xcode. There is no checked-in `.xcscheme` definition; user scheme metadata mentions `Freeze Input` and a stale `MyApp` entry, which does not prove either scheme's actions or command-line availability.
-5. Review Signing & Capabilities for your development environment. Automatic signing and a machine/account-specific development team are configured; no certificates or private signing material are included. Signing changes are separate from this documentation update.
-6. Launch manually and use **Request Access** if needed. Grant the running app Accessibility access in System Settings, then return to the app. Rebuilt apps whose identity or path changes may need manual reauthorization; the app cannot grant itself permission.
+No API keys, backend, account, environment variables, or permission setup is required for normal app operation. Existing Accessibility grants from older versions are not used by this version and may be removed manually in System Settings. Do not grant extra permissions to resolve a startup error; follow the displayed retry instructions instead.
 
-There are no app environment variables, API keys, backend services, cloud accounts, or environment example files. The app operates locally and has no offline/demo versus remote-service split.
+## Usage
 
-## How to run
+1. Read the exit instructions before choosing **Start Cleaning** while the app is in the foreground.
+2. Press and release **Esc five times within three seconds**, or hold **Control + Option + Command**, press **Q**, then release **Q**.
+3. Otherwise, wait for the **three-minute automatic exit**.
 
-Build and Run manually in Xcode using the app target and local Mac destination. No iOS/iPadOS target or Simulator workflow exists despite unused mobile-platform settings in the project file. A command-line app build command is intentionally not asserted: a shared scheme and its build actions are not checked in or verified.
-
-Before starting, read the exit instructions:
-
-1. Press **Start Cleaning** while Freeze Input is in the foreground. With the current source default, connected screens receive black overlays with no controls or countdown.
-2. Press and release **Esc five times within three seconds**. Exit occurs on the fifth release. Automatic repeats and a long hold do not count as multiple presses; another key-down or modifier change resets the sequence.
-3. Use **Control + Option + Command + Q** as the backup exit, or wait for the **three-minute automatic exit**.
-
-After backup exit, starting another session remains disabled until Q is released or the ten-second release grace period expires. If a key remains physically held after that deadline, its later events can pass through normally.
+Esc repeats and long holds do not count as multiple presses. Another key-down or modifier change resets the Esc sequence. A held key may produce ordinary events after a release-grace timeout, a safety deadline, or loss of foreground; this app cannot drain keys globally after its overlay closes.
 
 ## Project structure
 
 | Path | Responsibility |
 | --- | --- |
-| `Freeze Input.xcodeproj/` | App target, build settings, workspace, and user scheme metadata |
-| `Freeze Input/MyApp.swift` | `FreezeInputApp` entry point and termination delegate |
-| `Freeze Input/ContentView.swift` | Instructions, permission request, start control, and status |
-| `Freeze Input/CleaningController.swift` | Main-actor session and lifecycle coordination |
-| `Freeze Input/InputInterceptor.swift` | Event-tap worker, exit decoding, health checks, and recovery |
-| `Freeze Input/EscapePressTracker.swift` | Pure sequence tracking, exit reasons, and time policies |
-| `Freeze Input/BlackoutWindows.swift` | Overlay windows, cursor/presentation ownership, and local event fallback |
-| `Freeze Input/AccessibilityPermission.swift` | Trust checks, permission prompt, and unused Settings-link helper |
-| `Freeze Input/Assets.xcassets/` | Asset catalog metadata and accent-color entry |
-| `Tests/LogicChecks.swift` | Standalone in-memory logic checks; not an Xcode test target |
+| `Freeze Input/MyApp.swift` | App entry point, About links, and termination delegate |
+| `Freeze Input/ContentView.swift` | Instructions, start control, and status |
+| `Freeze Input/CleaningController.swift` | Main-actor session coordination, local exits, and lifecycle cleanup |
+| `Freeze Input/BlackoutWindows.swift` | Black windows, local event monitor, cursor and presentation ownership |
+| `Freeze Input/InputInterceptor.swift` | Background `SessionWatchdog` and scalar exit-key logic; no global event tap |
+| `Freeze Input/EscapePressTracker.swift` | Esc sequence, exit reasons, and timing policy |
+| `Freeze Input/Assets.xcassets/` | App icons and accent color |
+| `Tests/LogicChecks.swift` | Standalone assertions; not an Xcode test target |
+| `Freeze Input/PrivacyInfo.xcprivacy` | No-tracking/no-collection declarations and local timing API reason |
+| `PRIVACY_POLICY.md` | Public-facing privacy policy |
+| `APP_STORE_METADATA.md` | English macOS product-page copy, review notes, and internal submission checklist |
+
+## Startup and privacy declarations
+
+Startup is scheduled on the main queue after the Start button event completes. A common-mode timer checks keyboard focus for up to 0.5 seconds without blocking the main thread; there is no two-second semaphore wait. Failure cancels the overlay and reports an actionable message. The background safety watchdog remains active during startup.
+
+Display-change notifications are compared against the session's screen IDs, full frames, and backing scale factors. Notifications with the same configuration do not end a session. `visibleFrame`, which changes with Dock/menu presentation, is not used as the layout signature. Unreadable or genuinely changed configurations still cancel cleaning.
+
+`Freeze Input/PrivacyInfo.xcprivacy` declares no tracking, no tracking domains, and no collected data types. Its `NSPrivacyAccessedAPICategorySystemBootTime` entry uses reason `35F9.1` for local elapsed-time calculations and timers using `systemUptime`; this timing information is not sent off-device. The synchronized app source group is intended to include the manifest as a resource. A manual Build/Archive must confirm it is present at `Freeze Input.app/Contents/Resources/PrivacyInfo.xcprivacy`. File presence and plist syntax alone do not prove packaging or App Store Connect acceptance.
 
 ## Development and validation
 
-The existing standalone check command can be run manually from the repository root on macOS with a suitable Swift compiler and Apple SDK:
+The standalone logic checks can be compiled and run manually on macOS with a suitable Swift compiler:
 
 ```sh
 swiftc -module-cache-path /tmp/freeze-input-swift-module-cache -parse-as-library 'Freeze Input/EscapePressTracker.swift' 'Freeze Input/InputInterceptor.swift' Tests/LogicChecks.swift -o /tmp/freeze-input-logic-checks
 /tmp/freeze-input-logic-checks
 ```
 
-This compiles a separate check executable, constructs events in memory, and uses `precondition` assertions. It neither creates live taps nor posts events. Do not disable assertions when using it. It does not use the full app target's build configuration and cannot establish app compilation or runtime correctness. It was **not run in this task**.
+The executable uses `precondition` assertions. Do not disable assertions. It does not start a cleaning session, install event monitors, create global taps, post events, or reproduce the app target's full build settings. It was not executed for the sandbox change.
 
-Lightweight configuration/whitespace checks used for this documentation task:
-
-```sh
-plutil -lint 'Freeze Input.xcodeproj/project.pbxproj'
-git diff --check
-```
-
-There is no XCTest/Swift Testing target, CI pipeline, repository script, or configured standalone lint/format tool. Xcode enables compiler/analyzer warnings, but no analysis run is claimed here. App Build/Test and the [physical Mac validation checklist](TECHNICAL_DOCUMENTATION.md#manual-runtime-validation) remain manual.
+Static checks include property-list validation, Swift syntax parsing, and `git diff --check`. These do not prove SDK type compatibility, signed entitlements, runtime safety, or App Store eligibility. Build/Test and the [manual runtime checklist](TECHNICAL_DOCUMENTATION.md#manual-runtime-validation) remain manual.
 
 ## Known limitations
 
-- Public event APIs cannot guarantee suppression of Mission Control, Spaces, Show Desktop, Touch ID, power/media/brightness keys, or reserved system shortcuts. AppKit monitors consume only supported events delivered to this app.
-- Secure Event Input prevents safe operation; the app refuses startup or ends the session when detected. Tap metadata is not proof of physical event delivery.
-- Foreground loss ends cleaning. This is not a background input blocker.
-- Timers and watchdogs reduce failure exposure but cannot guarantee recovery from every OS/process failure. Emergency termination bypasses normal AppKit cleanup; cursor restoration needs hardware verification.
-- App Sandbox is explicitly disabled. The repository does not establish Mac App Store eligibility, notarization, or a distributable signed artifact.
-- The source-only inspection setting requires a code change and rebuild; it has no UI toggle. Its behavior and safety limits are detailed in the [technical documentation](TECHNICAL_DOCUMENTATION.md).
-- The repository includes user-specific Xcode metadata and a development-team setting, with no shared scheme or pinned toolchain.
-
-## License
-
-No project-wide `LICENSE`, `COPYING`, or other license declaration was found. Do not infer redistribution rights from the source being present. No third-party packages or corresponding bundled license notices were found; Apple frameworks and SDKs remain subject to their own terms, separate from a project license.
+- A local monitor only consumes supported events delivered to this app; system event routing and nested event-tracking loops can bypass it.
+- Cursor hiding does not freeze the pointer or disable a mouse/trackpad.
+- Watchdog scheduling is not a hard real-time guarantee. A fully stalled process cannot run its own cleanup, and emergency termination bypasses normal AppKit restoration.
+- There is no UI inspection switch or background global filtering mode. The current source sets overlay alpha to `1` (fully opaque); changing that source value is a diagnostic edit, not a product setting.
+- Enabling App Sandbox does not establish a signed distribution artifact or guarantee Apple approval.
+- No project-wide `LICENSE` or `COPYING` file was found. Do not infer redistribution rights from source availability.
