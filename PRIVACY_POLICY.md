@@ -2,21 +2,21 @@
 
 Last updated: October 17, 2026
 
-Freeze Input is a macOS app that temporarily filters keyboard, mouse, and trackpad input while you clean your device. This policy explains how the app handles information and uses macOS permissions.
+Freeze Input is a macOS app that displays a foreground cleaning cover and consumes supported input events delivered to its own windows while you clean your device. It does not disable input hardware or block input systemwide. This policy explains how the app handles information.
 
 ## Information Collection and Use
 
 Freeze Input operates locally on your Mac. The app does not collect or transmit personal information to the developer or third parties. It does not require an account, connect to a backend service, or include advertising, analytics, tracking, or third-party crash-reporting SDKs.
 
-## Accessibility Permission and Input Events
+## Local Input Events and Permissions
 
-Freeze Input requests Accessibility permission so it can filter input events during a cleaning session and recognize the keyboard commands used to end that session.
+During a cleaning session, Freeze Input processes supported keyboard, mouse, scroll, and trackpad events delivered to the app. It uses event types, key codes, modifier keys, repeat status, and timing to consume local events and recognize the commands used to end the session.
 
-While input filtering is active, the app processes event information locally, including event types, key codes, modifier keys, repeat status, and timing needed to recognize exit commands. It does not convert keyboard events into typed text, record your typing, replay input events, save input-event information to disk, or upload it.
+The app does not convert keyboard events into typed text, record your typing, replay input events, save input-event information to disk, or upload it. It does not install a global event tap or monitor events sent to other apps.
 
-Temporary session information is held in memory for the app's operation. The app does not maintain a history of your input or cleaning sessions.
+This version does not request or require Accessibility or Input Monitoring permission. If you granted permission to an older version, you may remove that grant in **System Settings → Privacy & Security**; the current version does not depend on it.
 
-You can revoke Accessibility permission at any time in **System Settings → Privacy & Security → Accessibility**. Without that permission, Freeze Input cannot start its input-filtering function.
+Temporary session and safety-monitoring information is held in memory for operation. The app does not maintain a history of input or cleaning sessions. Cleaning ends when the app leaves the foreground and does not resume automatically.
 
 ## Data Storage, Sharing, and Tracking
 
@@ -28,7 +28,7 @@ The app does not sell or share personal information, track you across apps or we
 
 Apple may process information independently through macOS, the App Store, or diagnostics that you choose to share. Those services are governed by Apple's own privacy policies and settings.
 
-If you visit the project's GitHub page or contact the developer through GitHub, GitHub processes information under its own privacy policy. Any information you choose to include in a support request is separate from the app's local input processing. Avoid posting sensitive information in public discussions or issues.
+The **Privacy Policy** and **Support / Contact** links in **Freeze Input → About Freeze Input** open GitHub in your browser. GitHub processes visits and information you choose to submit under its own privacy policy. A support request is separate from the app's local event processing. Avoid posting sensitive information in public issues or discussions.
 
 ## Children’s Privacy
 
@@ -40,4 +40,4 @@ This policy may be updated when the app's functionality or information-handling 
 
 ## Contact
 
-For privacy questions, contact the developer through the [Freeze Input GitHub project](https://github.com/q7jxb7yxdk-star/freeze-input).
+For support or privacy questions, contact the developer through the [Freeze Input GitHub Issues page](https://github.com/q7jxb7yxdk-star/freeze-input/issues).
